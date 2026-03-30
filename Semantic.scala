@@ -11,6 +11,12 @@ class Semantic (val prog: Prog) {
 	/* Symbol table stored as a mutable HashMap */
 	private val env = HashMap[String, Stype]()
 
+	/* Basic types*/
+	private final def isBasic(t: Stype): Boolean = t match {
+		case Sinteger | Sbool => true
+		case _ => false
+	}
+
 	/* Public method that performs semantic check on annotated AST and returns updated annotated AST */
 	def check(): Prog = {
 		prog.decl_list.foreach {
@@ -23,12 +29,43 @@ class Semantic (val prog: Prog) {
 	/* Checks statements */
 	private def checkStmt(stmt: Stmt, env: HashMap[String, Stype]): Unit = {
 		stmt match {
-			case PrintStmt(expr) => ()
-			case WhileStmt(expr, stmt) => ()
-			case IfStmt(expr, thenStmt, elseStmt)  => ()
-			case AssignStmt(expr1, expr2) => ()
-			case SeqStmt(stmt_list) => ()
-			case BlockStmt(decl_list, stmt) => ()
+			case PrintStmt(expr) =>
+				checkExpr(expr, env)
+			case WhileStmt(expr, stmt) =>
+				checkExpr(expr, env)
+				checkType(expr, Sbool)
+				checkStmt(stmt, env)
+			case IfStmt(expr, thenStmt, elseStmt)  =>
+				checkExpr(expr, env)
+				checkType(expr, Sbool)
+				checkStmt(thenStmt, env)
+				checkStmt(elseStmt, env)
+
+			case AssignStmt(expr1, expr2) =>
+				expr1 match {
+					case Variable(_, _, _) | ArrayElement(_, _, _, _) => ()
+					case _ => throw ParserException("Invalid assignment on line " + expr1.line)
+				}
+				checkExpr(expr1, env)
+				checkExpr(expr2, env)
+				if (!isBasic(expr1.stype) || !isBasic(expr2.stype))
+					throw ParserException("Type mismatch with expression on line " + expr1.line + "not a basic type")
+				checkType(expr1, expr2)
+
+			case SeqStmt(stmt_list) =>
+				for (s <- stmt_list) checkStmt(s, env)
+
+			case BlockStmt(decl_list, stmt) =>
+				val blockEnv = env.clone()
+				val localDecls = HashMap[String, Stype]()
+				decl_list.foreach {
+					case Declr(name, stype, line) => {
+						notInEnv(name, localDecls, line)
+						localDecls += (name -> stype)
+						blockEnv += (name -> stype)
+					}
+				}
+				checkStmt(stmt, blockEnv)
 			case EmptyStmt => ()
 		}
 	}
@@ -46,8 +83,38 @@ class Semantic (val prog: Prog) {
 				checkExpr(expr, env)
 				checkType(expr, stype)
 			}
-			case Variable(name, stype, line) => expr.stype = inEnv(name, env, line)
-			case ArrayElement(name, expr_list, stype, line) => ()
+			case Variable(name, stype, line) => {
+				val t = inEnv(name, env, line)
+				t match {
+					case Sarray(_, _) => throw ParserException("Array " + name + " used without subscripts on " + line)
+					case Sinteger | Sbool => expr.stype = t
+					case _ => throw ParserException("Invalid type for variable " + name + " on line " + line)
+				}
+			}
+
+			case ArrayElement(name, expr_list, stype, line) => {
+				val arrT = inEnv(name, env, line)
+				arrT match {
+					case Sarray(_, _) => ()
+					case _ => throw ParserException("Variable " + name + " is not an array on line " + line)
+				}
+
+				expr_list.foreach { idx =>
+					checkExpr(idx, env)
+					checkType(idx, Sinteger)
+				}
+				var t: Stype = arrT
+				for (_ <- expr_list.indices) {
+					t match {
+						case Sarray(_, inner) => t = inner
+						case _ => throw ParserException("Too many subscripts for array " + name + " on line " + line)
+					}
+				}
+				if (!isBasic(t))
+					throw ParserException("Array element " + name + " does not have basic type on line " + line)
+
+				expr.stype = t
+			}
 			case Num(value, stype, line) => ()
 			case BoolV(value, stype, line) => ()
 		}
